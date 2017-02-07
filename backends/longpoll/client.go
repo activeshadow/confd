@@ -1,7 +1,7 @@
 package longpoll
 
 import (
-	//"crypto/tls"
+	"crypto/tls"
 	//"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/kelseyhightower/confd/log"
 )
 
 type LongpollResponse struct {
@@ -33,13 +35,15 @@ type Client struct {
 }
 
 func NewLongpollClient(endpoint, caCert string, basicAuth bool, user, pass string) (*Client, error) {
-	return &Client{transport: &http.Transport{}, endpoint: endpoint, values: make(map[string]string)}, nil
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	return &Client{transport: transport, endpoint: endpoint, values: make(map[string]string)}, nil
 }
 
 func (this Client) update(key, value string) {
 	this.Lock()
+	defer this.Unlock()
+
 	this.values[key] = value
-	this.Unlock()
 }
 
 func (this Client) GetValues(keys []string) (map[string]string, error) {
@@ -70,6 +74,8 @@ func (this Client) watch(prefix, key string, since uint64, update chan uint64, s
 			"%s?timeout=10&category=%s&since=%d",
 			this.endpoint+prefix, strings.TrimPrefix(key, prefix), since,
 		)
+
+		log.Debug("Watching %s", url)
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -111,8 +117,11 @@ func (this Client) watch(prefix, key string, since uint64, update chan uint64, s
 		} else if response.Timeout != "" {
 			select {
 			case <-stop:
+				log.Debug("Stop signal received. Exiting.")
 				return
 			default:
+				log.Debug("Timeout reached in longpoll watcher. Reconnecting.")
+
 				since = uint64(response.Timestamp)
 				continue
 			}
@@ -132,6 +141,8 @@ func (this Client) watch(prefix, key string, since uint64, update chan uint64, s
 }
 
 func (this Client) WatchPrefix(prefix string, keys []string, waitIndex uint64, stopChan chan bool) (uint64, error) {
+	log.Debug("New longpoll watch for prefix %s and keys %#v", prefix, keys)
+
 	var wait sync.WaitGroup
 
 	var (
